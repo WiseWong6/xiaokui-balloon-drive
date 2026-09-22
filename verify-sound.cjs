@@ -31,7 +31,7 @@ function harness(options = {}) {
   }
   class AudioContext {
     constructor() {
-      this.nodes = [];this.destination = {};this.sampleRate = 24000;
+      this.nodes = [];this.destination = {};this.sampleRate = options.sampleRate || 24000;
       this.currentTime = 0;this.state = 'suspended';this.resumes = 0;this.suspends = 0;
       instances.push(this);
     }
@@ -47,7 +47,7 @@ function harness(options = {}) {
     createBufferSource() {return new Source(this, 'buffer');}
     createBuffer(channels, length, rate) {
       assert.equal(channels, 1);
-      return {data: new Float32Array(length), duration: length / rate,
+      return {data: new Float32Array(length), duration: length / rate, sampleRate: rate,
         copyToChannel(data, channel) {assert.equal(channel, 0);this.data.set(data);}};
     }
     async resume() {
@@ -73,11 +73,12 @@ function harness(options = {}) {
     }
   }
   const context = vm.createContext({console, Float32Array, Math, Number, Object, Set, Array,
+    atob: text => Buffer.from(text, 'base64').toString('binary'),
     window: options.unsupported ? {} : {AudioContext},
     setTimeout(fn) {const id = ++timerId;timers.set(id, fn);return id;},
     clearTimeout(id) {timers.delete(id);}});
-  vm.runInContext(fs.readFileSync(path.join(__dirname, 'sound.js'), 'utf8'), context);
-  const api = vm.runInContext('({DrivingSound, createReleaseSamples, createDrivingNoise, DRIVING_AUDIO_LEVELS})', context);
+  for(const file of ['assets/audio/meow.js','sound.js'])vm.runInContext(fs.readFileSync(path.join(__dirname, file), 'utf8'), context);
+  const api = vm.runInContext('({DrivingSound, createReleaseSamples, createDrivingNoise, decodeMeowRecording, XIAOKUI_MEOW, DRIVING_AUDIO_LEVELS})', context);
   return {...api, instances, timers, async flushTimers() {
     for (const [id, fn] of [...timers]) {timers.delete(id);fn();}
     await Promise.resolve();await Promise.resolve();
@@ -210,6 +211,65 @@ async function main() {
   assert.equal(closedSound.enabled, false);assert.equal(closed.timers.size, 0);
   assert.equal(deviceErrors, 1, '挂起失败只报告一次，不重新创建失败计时器');
 
+  // 从真实场景取猫叫时刻：正常经过只叫一次，跳过不补播，回拖和下一轮可再次叫。
+  const scene = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'assets/audio/meow.js'), 'utf8')+'\n'+fs.readFileSync(path.join(__dirname, 'scene.js'), 'utf8')
+    + '\n({MEOW_AT,MEOW_DURATION,DURATION})');
+  const meowEvent = {type: 'meow', time: scene.MEOW_AT, duration: scene.MEOW_DURATION, x: .04};
+  for (const rate of [.5, 1, 1.5, 2, 3]) {
+    const mh = harness({sampleRate: rate===1?44100:rate===2?48000:24000}), cat = new mh.DrivingSound([...events, meowEvent]), calls = [];
+    const play = cat.schedule.bind(cat);
+    cat.schedule = (event, when, speed) => {
+      play(event, when, speed);
+      if (event.type !== 'meow') return;
+      calls.push({when, speed});
+      const voice = [...cat.voices].at(-1);
+      assert.equal(voice.source.buffer, cat.meowBuffer, '猫叫使用真实录音');
+      assert.equal(voice.source.buffer.sampleRate, mh.XIAOKUI_MEOW.rate, '设备采样率变化不改变录音的音高与时长');
+      assert.equal(voice.source.playbackRate.value, rate);
+      assert.equal(voice.gain.gain.value, mh.DRIVING_AUDIO_LEVELS.meow);
+      assert.ok(Math.abs(voice.source.buffer.duration - scene.MEOW_DURATION) < 1 / cat.context.sampleRate);
+    };
+    cat.update(frame(0, true, rate));await cat.setEnabled(true);
+    const audio = cat.context;
+    for (let i=1;i<=Math.ceil(scene.DURATION/rate*60);i++) {
+      audio.advance(1/60);cat.update(frame(i/60*rate, true, rate));
+    }
+    assert.equal(calls.length, 1, '每轮恰好喵一次');
+    assert.ok(Math.abs(calls[0].when-scene.MEOW_AT/rate) < .001, '猫叫与当前倍速对齐');
+    assert.equal(calls[0].speed, rate);assert.equal(cat.voices.size, 0);
+    cat.invalidate();cat.update(frame(0, true, rate));
+    cat.invalidate();cat.update(frame(scene.MEOW_AT+.2, true, rate));
+    assert.equal(calls.length, 1, '跳过猫叫时刻不补播');
+    cat.invalidate();cat.update(frame(scene.MEOW_AT-.04*rate, true, rate));
+    assert.equal(calls.length, 2, '回到猫叫之前会重新安排一次');
+    cat.update(frame(scene.MEOW_AT-.04*rate, false, rate));
+    audio.advance(.08);await mh.flushTimers();
+    assert.equal(cat.voices.size, 0, '暂停取消尚未开始的猫叫');
+    assert.equal(audio.state, 'suspended');
+    cat.update(frame(0, true, rate));await tickPromises();
+    for(let i=1;i<=Math.ceil(scene.DURATION/rate*60);i++) {
+      audio.advance(1/60);cat.update(frame(i/60*rate, true, rate));
+    }
+    assert.equal(calls.length, 3, '下一轮正常经过再次喵一次');
+  }
+
+  // 页面播放的每个采样都必须来自可独立试听的录音文件，避免再被合成音替换。
+  const wav=fs.readFileSync(path.join(__dirname,'assets/audio/meow.wav'));
+  assert.equal(wav.toString('ascii',0,4),'RIFF');assert.equal(wav.toString('ascii',8,12),'WAVE');
+  let format,pcm;
+  for(let offset=12;offset+8<=wav.length;){
+    const name=wav.toString('ascii',offset,offset+4),size=wav.readUInt32LE(offset+4);
+    const chunk=wav.subarray(offset+8,offset+8+size);
+    if(name==='fmt ')format=chunk;if(name==='data')pcm=chunk;
+    offset+=8+size+(size%2);
+  }
+  assert.ok(format&&pcm);assert.equal(format.readUInt16LE(0),1);assert.equal(format.readUInt16LE(2),1);
+  assert.equal(format.readUInt16LE(14),16);assert.equal(format.readUInt32LE(4),h.XIAOKUI_MEOW.rate);
+  const recorded=h.decodeMeowRecording();
+  assert.equal(pcm.length,recorded.length*2);assert.equal(recorded.length/h.XIAOKUI_MEOW.rate,scene.MEOW_DURATION);
+  for(let i=0;i<recorded.length;i++)assert.equal(recorded[i],pcm.readInt16LE(i*2)/32768);
+  assert.throws(()=>h.decodeMeowRecording({...h.XIAOKUI_MEOW,data:''}),/录音不完整/);
+
   // 采样首尾平滑、无无穷值；按同时播放八个短声计算，仍有充分峰值余量。
   for (const sampleRate of [24000, 44100, 48000]) {
     const noise = h.createDrivingNoise(sampleRate);
@@ -226,7 +286,12 @@ async function main() {
     const levels = h.DRIVING_AUDIO_LEVELS;
     const worstPeak = levels.master * (levels.engine + levels.harmonic + levels.wind * peak + 8 * levels.release * .72);
     assert.ok(worstPeak < .3, `音量保留余量：${worstPeak}`);
+    const meow = h.decodeMeowRecording();
+    assert.equal(Math.abs(meow[0]),0);assert.ok(Math.abs(meow.at(-1))<.001);
+    assert.ok([...meow].every(value=>Number.isFinite(value)&&Math.abs(value)<=.651));
+    assert.ok(levels.master*(levels.engine+levels.harmonic+levels.wind*peak+levels.meow*.65)<.3,'猫叫叠加行驶声仍保留音量余量');
   }
   console.log(`声音检查通过：${events.length} 次脱落逐一对齐、循环/暂停/后台/拖动/倍速、汽车远去与声像、异步开关、节点回收；最多同时 ${maxVoices} 个短声，保守总峰值低于 0.3。`);
+  console.log('猫叫检查通过：与真实录音逐采样一致，气球清空后每轮一声，五档倍速和三种设备采样率同步，跳过不补播、暂停可取消，采样首尾平滑。');
 }
 main().catch(error => {console.error(error);process.exitCode = 1;});

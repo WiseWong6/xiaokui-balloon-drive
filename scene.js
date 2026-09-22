@@ -35,9 +35,12 @@ function setup(){
   const restart=document.getElementById('play-restart');
   for(const control of [seek,playButton,speedButton,soundButton,restart])control.disabled=false;
   paused=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  sceneSound=new DrivingSound(Array.from({length:BALLOON_COUNT},(_,index)=>({
-    time:release(index),index,x:tether(release(index)).x/W*2-1
-  })));
+  sceneSound=new DrivingSound([
+    ...Array.from({length:BALLOON_COUNT},(_,index)=>({
+      type:'release',time:release(index),index,x:tether(release(index)).x/W*2-1
+    })),
+    {type:'meow',time:MEOW_AT,duration:MEOW_DURATION,x:carX(MEOW_AT)/W*2-1}
+  ]);
   sceneSound.getFrame=soundFrame;
   sceneSound.onError=error=>syncSoundButton(error);
   playButton.onclick=()=>{paused=!paused;syncPlay();updateSound()};
@@ -83,7 +86,7 @@ function syncSoundButton(error){
   soundButton.textContent=error?'音效重试':sceneSound.enabled?'声音开':'声音关';
   soundButton.setAttribute('aria-pressed',String(sceneSound.enabled));
   soundButton.setAttribute('aria-label',error?'重试开启音效':sceneSound.enabled?'关闭音效':'开启音效');
-  soundButton.title=error?error.message:'开启行驶、风声与气球松绳音效';
+  soundButton.title=error?error.message:'开启行驶、风声、气球松绳与小葵猫叫音效';
 }
 function soundFrame(){
   return {time:clock,duration:DURATION,rate:playbackRate,running:!paused&&!draggingProgress&&!document.hidden,
@@ -181,6 +184,10 @@ function findDepartureTime(){
   return DURATION;
 }
 const DEPART_AT=findDepartureTime();
+const MEOW_AT=DEPART_AT+.12,MEOW_DURATION=XIAOKUI_MEOW.frames/XIAOKUI_MEOW.rate;
+function meowMouth(t){
+  return ease(t,MEOW_AT,MEOW_AT+.07)*(1-ease(t,MEOW_AT+MEOW_DURATION-.18,MEOW_AT+MEOW_DURATION));
+}
 function balloonState(i,t){
   const state=trackedBalloonState(i,t);
   return {...state,p:pt(state.p.x+cameraLag(t),state.p.y)};
@@ -188,6 +195,36 @@ function balloonState(i,t){
 function balloonString(i,t){
   const string=trackedBalloonString(i,t),dx=cameraLag(t);
   return {...string,tip:pt(string.tip.x+dx,string.tip.y),end:pt(string.end.x+dx,string.end.y)};
+}
+function exhaustPuffs(t){
+  const interval=.19,lifetime=.72,puffs=[];
+  for(let index=Math.max(0,Math.ceil((t-lifetime)/interval));index<=Math.floor(t/interval);index++){
+    const born=index*interval,age=t-born,origin=world(born,XIAOKUI_EXHAUST_PORT);
+    if(origin.x>W+12)continue;
+    // 出口处继承车速，随后被风留在身后；退镜后也沿原来的路径飘散。
+    const drift=-24*age+(DRIVE_SPEED+24)*.12*(1-Math.exp(-age/.12));
+    puffs.push({
+      x:origin.x+cameraTravel(born)-cameraTravel(t)+drift,
+      y:origin.y-18*age-Math.sin(index*1.7)*5*age,
+      radius:(4+23*ease(age,0,lifetime))*CAR_SCALE,
+      opacity:.42*ease(age,0,.045)*(1-ease(age,.10,lifetime))
+    });
+  }
+  return puffs;
+}
+function drawExhaust(t){
+  push();noStroke();
+  for(const puff of exhaustPuffs(t)){
+    fill(255);
+    const radius=puff.radius;
+    const haze=drawingContext.createRadialGradient(puff.x,puff.y,0,puff.x,puff.y,radius*1.3);
+    haze.addColorStop(0,`rgba(241,250,255,${puff.opacity})`);
+    haze.addColorStop(.45,`rgba(213,238,255,${puff.opacity*.55})`);
+    haze.addColorStop(1,'rgba(213,238,255,0)');
+    drawingContext.fillStyle=haze;
+    ellipse(puff.x,puff.y,radius*2.6,radius*1.8);
+  }
+  pop();
 }
 function renderScene(t){
   background(BLUE);
@@ -201,6 +238,7 @@ function renderScene(t){
     const x=k*160-offset;line(x,1132,x+38,1132);
     line(x+92,1176,x+113,1176);
   }
+  drawExhaust(t);
   drawingContext.save();
   for(let i=BALLOON_COUNT-1;i>=0;i--)drawBalloon(i,t,'strings');
   for(let i=BALLOON_COUNT-1;i>=0;i--)drawBalloon(i,t,'body');
@@ -210,7 +248,7 @@ function renderScene(t){
   drawingContext.restore();
   const car=vehiclePose(t);push();translate(car.x,car.y);scale(CAR_SCALE);
   // 猫与车统一缩小，绳锚点同步；轮胎按缩小后的半径计算滚动。
-  drawXiaokuiCar(t,driveDistance(t)/CAR_SCALE);pop();
+  drawXiaokuiCar(t,driveDistance(t)/CAR_SCALE,meowMouth(t));pop();
 }
 function drawBalloon(i,t,layer='both'){
   const s=balloonState(i,t),p=s.p,color=COLORS[i%7];

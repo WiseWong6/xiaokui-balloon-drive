@@ -12,6 +12,7 @@ assert.ok(scripts.indexOf('vendor/p5.min.js')>=0,'local p5 is present');
 assert.ok(scripts.indexOf('vendor/p5.min.js')<scripts.indexOf('xiaokui-car.js'),'p5 loads before cat drawing');
 assert.ok(scripts.indexOf('xiaokui-car.js')<scripts.indexOf('scene.js'),'cat drawing loads before animation');
 assert.ok(scripts.indexOf('sound.js')>=0&&scripts.indexOf('sound.js')<scripts.indexOf('scene.js'),'sound support loads before animation');
+assert.ok(scripts.indexOf('assets/audio/meow.js')>=0&&scripts.indexOf('assets/audio/meow.js')<scripts.indexOf('sound.js'),'recording loads before sound controls');
 assert.ok(!/<header\b|id="phase"|造型稿/.test(html),'corner labels are removed');
 for(const [,resource] of html.matchAll(/(?:src|href)="([^"]+)"/g)){
   if(/^(?:[a-z]+:|#|\/\/)/i.test(resource))continue;
@@ -123,10 +124,10 @@ function harness(reducedMotion=false){
   };
   env.createCanvas=(w,h)=>{record('createCanvas',[w,h]);return {parent(id){assert.ok(elements[id],`canvas parent ${id}`)}}};
   vm.createContext(env);
-  for(const file of ['xiaokui-car.js','scene.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,file),'utf8'),env,{filename:file});
+  for(const file of ['assets/audio/meow.js','xiaokui-car.js','scene.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,file),'utf8'),env,{filename:file});
   const evaluate=source=>vm.runInContext(source,env);
   assert.equal(evaluate('typeof drawRainbow'),'undefined','rainbow drawing is removed');
-  const api=evaluate('({W,H,DURATION,BALLOON_COUNT,CAR_SCALE,DRIVE_SPEED,DEPART_AT,DEPART_SCREEN_SPEED,CAMERA_RELEASE_SECONDS,setup,draw,renderScene,drawXiaokuiCar,drawBalloon,balloonState,balloonString,attached,attachedVelocity,release,vehiclePose,carX,driveDistance,cameraTravel,world,tether,balloonSize,balloonTilt})');
+  const api=evaluate('({W,H,DURATION,BALLOON_COUNT,CAR_SCALE,DRIVE_SPEED,DEPART_AT,DEPART_SCREEN_SPEED,CAMERA_RELEASE_SECONDS,MEOW_AT,MEOW_DURATION,meowMouth,setup,draw,renderScene,drawXiaokuiCar,drawBalloon,balloonState,balloonString,attached,attachedVelocity,release,vehiclePose,carX,driveDistance,cameraTravel,world,tether,balloonSize,balloonTilt})');
   const balanced=()=>{
     assert.equal(p5Stack.length,0,'unbalanced p5 push/pop');assert.equal(contextStack.length,0,'unbalanced canvas save/restore');
     assert.deepEqual(matrix,[1,0,0,1,0,0],'transform leaked outside draw');assert.equal(ctx.globalAlpha,1,'opacity leaked outside draw');
@@ -249,7 +250,7 @@ assert.ok(changedAngles[0]>3&&changedAngles[0]<4&&Math.abs(changedAngles[0]-chan
 const originalCar=test.env.drawXiaokuiCar,carInputs=[];
 const visibilityTimes=[0,6,api.DEPART_AT,api.DEPART_AT+.35,api.DURATION-.1,api.DURATION];
 try{
-  test.env.drawXiaokuiCar=(t,travel)=>{carInputs.push({t,travel,opacity:test.env.drawingContext.globalAlpha});return originalCar(t,travel)};
+  test.env.drawXiaokuiCar=(t,travel,meow)=>{carInputs.push({t,travel,opacity:test.env.drawingContext.globalAlpha});return originalCar(t,travel,meow)};
   for(const t of visibilityTimes){api.renderScene(t);test.balanced()}
 }finally{test.env.drawXiaokuiCar=originalCar}
 assert.equal(carInputs.length,visibilityTimes.length,'scene draws the car once per frame');
@@ -297,12 +298,28 @@ async function verifyControls(){
   assert.equal(progress.disabled,false,'progress becomes available after setup');
   assert.equal(test.sounds.length,1,'one audio controller is shared by playback controls');
   assert.equal(test.sounds[0].enabled,false,'sound needs deliberate opt-in');
-  assert.equal(test.sounds[0].events.length,api.BALLOON_COUNT,'each departing balloon has one sound event');
-  for(const [i,event] of test.sounds[0].events.entries()){
+  assert.equal(test.sounds[0].events.length,api.BALLOON_COUNT+1,'each balloon releases once, followed by one meow');
+  const releases=test.sounds[0].events.filter(event=>event.type==='release');
+  assert.equal(releases.length,api.BALLOON_COUNT,'every balloon retains its release sound');
+  for(const [i,event] of releases.entries()){
     assert.equal(event.time,api.release(i),'sound release time comes from the visible balloon motion');
     assert.equal(event.index,i,'balloon sound retains its event index');
     assert.ok(event.x>=-1&&event.x<=1,'balloon sound stereo position is valid');
   }
+  const meows=test.sounds[0].events.filter(event=>event.type==='meow');
+  assert.equal(meows.length,1,'one meow per loop');
+  assert.equal(meows[0].time,api.MEOW_AT);
+  assert.equal(meows[0].duration,api.MEOW_DURATION);
+  assert.ok(api.MEOW_AT>allBalloonsOutAt&&api.MEOW_AT+api.MEOW_DURATION<wholeCarOutAt,'meow follows balloon clearance while Xiaokui is still visible');
+  assert.equal(api.meowMouth(api.MEOW_AT-.01),0);
+  assert.equal(api.meowMouth(api.MEOW_AT+api.MEOW_DURATION+.01),0);
+  assert.ok(api.meowMouth(api.MEOW_AT+.2)>.9,'mouth opens during the meow');
+  const mouthValues=[],drawCat=test.env.drawXiaokuiCar;
+  try{
+    test.env.drawXiaokuiCar=(t,travel,mouth)=>{mouthValues.push(mouth);return drawCat(t,travel,mouth)};
+    api.renderScene(api.MEOW_AT-.01);api.renderScene(api.MEOW_AT+.2);api.renderScene(api.MEOW_AT+api.MEOW_DURATION+.01);
+  }finally{test.env.drawXiaokuiCar=drawCat}
+  assert.equal(mouthValues[0],0);assert.ok(mouthValues[1]>.9);assert.equal(mouthValues[2],0);
   assert.equal(audioFrame().running,true,'sound receives initial playback intent');
   assert.equal(audioFrame().duration,api.DURATION,'sound shares the animation duration');
   assert.equal(audioFrame().vehicleGain,1,'car audio starts at the intended level');

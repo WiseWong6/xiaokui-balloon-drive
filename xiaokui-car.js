@@ -1,7 +1,11 @@
 /* 小葵与敞篷车：按 xiaokui-car-arm-trimmed.png 的批准造型转绘。
  * 只用 p5.js 曲线，轮胎底为本地 y=0；整车位移由 scene.js 控制。
  */
-function drawXiaokuiCar(t, travel = t * 360) {
+const XIAOKUI_EXHAUST_PORT = {x: -253, y: -47};
+function xiaokuiSteering(t) {
+  return Math.sin(t * 2.1) * .14 + Math.sin(t * .85) * .035;
+}
+function drawXiaokuiCar(t, travel = t * 360, meow = 0) {
   const WHITE = '#FFFFFF';
   const FUR = '#958878';
   const INNER_EAR = '#78634E';
@@ -64,6 +68,9 @@ function drawXiaokuiCar(t, travel = t * 360) {
       ['C', 621, 796, 620, 783, 608, 776]
     ], FUR);
 
+    // 前臂、前爪和方向盘一同轻摆，握持位置始终连在一起。
+    const steering = xiaokuiSteering(t);
+    push();translate(763, 854);rotate(steering * .55);translate(-763, -854);
     // 远侧短前臂自然搭向方向盘。
     path([
       ['M', 746, 768], ['C', 761, 774, 770, 792, 778, 803],
@@ -88,15 +95,19 @@ function drawXiaokuiCar(t, travel = t * 360) {
     // 方向盘位于两只白爪后方。
     push();
     translate(763, 854);
-    rotate(-0.20 + Math.sin(t * 1.05) * 0.012);
+    rotate(-0.20);
     noFill(); stroke(DEEP_BLUE); strokeWeight(17);
     ellipse(0, 0, 96, 68);
     stroke(BLUE); strokeWeight(12);
     ellipse(0, -3, 96, 68);
-    line(0, -3, 0, 30);
-    line(-5, 9, -28, 28);
-    line(4, 9, 29, 27);
-    noStroke(); fill(BLUE); ellipse(0, 13, 19, 19);
+    // 轮辐在椭圆轮圈内转动，缩小后也能看清轻微修正方向的动作。
+    push();translate(0, -3);scale(1, .7);rotate(steering * 1.8);
+    strokeWeight(8);
+    for(let i=0;i<3;i++){
+      const a=-Math.PI/2+i*Math.PI*2/3;
+      line(0, 0, Math.cos(a)*40, Math.sin(a)*40);
+    }
+    noStroke();fill(BLUE);circle(0, 0, 17);pop();
     pop();
     path([
       ['M', 692, 822], ['C', 704, 817, 719, 820, 727, 831],
@@ -110,6 +121,7 @@ function drawXiaokuiCar(t, travel = t * 360) {
       ['C', 787, 845, 774, 838, 775, 826],
       ['C', 778, 818, 776, 808, 785, 803]
     ], WHITE);
+    pop();
 
     // 头部与不对称花纹一起轻微转动。
     push();
@@ -161,13 +173,43 @@ function drawXiaokuiCar(t, travel = t * 360) {
       ['C', 722, 735, 716, 741, 712, 742],
       ['C', 707, 741, 699, 734, 702, 728]
     ], INK);
-    path([
-      ['M', 712, 740], ['C', 716, 745, 715, 751, 711, 754],
-      ['C', 708, 757, 704, 757, 701, 755]
-    ], null, INK, 4.3);
     noStroke(); fill(FUR); ellipse(726, 747, 21, 19);
+    const opening = Math.max(0, Math.min(1, meow));
+    if(opening > .01){
+      // 嘴、舌尖与下巴围绕上唇一起收小，保留原来的开合节奏。
+      push();translate(708, 747);scale(.75);translate(-708, -747);
+      const mouthWidth = 10 + 28 * opening, mouthHeight = 3 + 39 * opening;
+      const mouthTop = 747, mouthBottom = mouthTop + mouthHeight;
+      path([
+        ['M', 686, 770], ['C', 685, 777, 688, mouthBottom + 8, 706, mouthBottom + 9],
+        ['C', 724, mouthBottom + 10, 735, 781, 732, 769],
+        ['C', 720, 765, 698, 765, 686, 770]
+      ], WHITE);
+      path([
+        ['M', 708 - mouthWidth / 2, mouthTop + 5],
+        ['C', 708 - mouthWidth / 2, mouthTop - 3, 708 + mouthWidth / 2, mouthTop - 3, 708 + mouthWidth / 2, mouthTop + 5],
+        ['C', 708 + mouthWidth / 2, mouthBottom - 5, 718, mouthBottom, 708, mouthBottom],
+        ['C', 698, mouthBottom, 708 - mouthWidth / 2, mouthBottom - 5, 708 - mouthWidth / 2, mouthTop + 5]
+      ], INK);
+      noStroke();fill('#B9DDFF');
+      ellipse(708, mouthBottom - 7 * opening, 21 * opening, 9 * opening);
+      pop();
+    }else{
+      path([
+        ['M', 712, 740], ['C', 716, 745, 715, 751, 711, 754],
+        ['C', 708, 757, 704, 757, 701, 755]
+      ], null, INK, 4.3);
+    }
     pop();
   }
+
+  // 小排气管藏在后保险杠下，尾气使用同一出口坐标。
+  push();strokeCap(ROUND);strokeWeight(6);stroke('#8AC9FF');
+  line(XIAOKUI_EXHAUST_PORT.x+22, XIAOKUI_EXHAUST_PORT.y,
+    XIAOKUI_EXHAUST_PORT.x, XIAOKUI_EXHAUST_PORT.y);
+  noStroke();fill('#D9F4FF');
+  ellipse(XIAOKUI_EXHAUST_PORT.x, XIAOKUI_EXHAUST_PORT.y, 4, 7);
+  pop();
 
   push();
   scale(0.52);

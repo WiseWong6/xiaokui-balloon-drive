@@ -1,8 +1,8 @@
 'use strict';
 
-// 全部声音在本地合成：低沉的匀速行驶声、柔和的风，以及松绳时的一小阵掠风。
+// 行驶、风和松绳掠风在本地合成；猫叫播放本地保存的真实录音。
 // 气球没有爆开，因此这里没有爆破声。只有主动打开声音时才创建音频设备。
-const DRIVING_AUDIO_LEVELS = Object.freeze({master: .65, engine: .064, harmonic: .016, wind: .105, release: .037});
+const DRIVING_AUDIO_LEVELS = Object.freeze({master: .65, engine: .064, harmonic: .016, wind: .105, release: .037, meow: .3});
 
 function createDrivingNoise(sampleRate) {
   const data = new Float32Array(Math.ceil(sampleRate * 4));
@@ -42,10 +42,23 @@ function createReleaseSamples(sampleRate, variant) {
   return data;
 }
 
+// 只还原录音采样，不合成音高；由音频设备按素材采样率播放。
+function decodeMeowRecording(clip = XIAOKUI_MEOW) {
+  const bytes = atob(clip.data);
+  if(bytes.length !== clip.frames*2)throw new Error('猫叫录音不完整');
+  const data = new Float32Array(clip.frames);
+  for(let i=0;i<data.length;i++){
+    const value=bytes.charCodeAt(i*2)|(bytes.charCodeAt(i*2+1)<<8);
+    data[i]=(value>=32768?value-65536:value)/32768;
+  }
+  return data;
+}
+
 class DrivingSound {
   constructor(events = []) {
     this.events = events.filter(event => Number.isFinite(event.time) && event.time >= 0)
-      .map(event => ({time: event.time, index: event.index || 0, x: Math.max(-1, Math.min(1, Number(event.x) || 0))}))
+      .map(event => ({time: event.time, type: event.type === 'meow' ? 'meow' : 'release',
+        duration: event.duration || XIAOKUI_MEOW.frames/XIAOKUI_MEOW.rate, index: event.index || 0, x: Math.max(-1, Math.min(1, Number(event.x) || 0))}))
       .sort((a, b) => a.time - b.time);
     this.context = null;
     this.enabled = false;
@@ -100,6 +113,9 @@ class DrivingSound {
       const result = c.createBuffer(1, samples.length, c.sampleRate);
       result.copyToChannel(samples, 0);return result;
     });
+    const meow = decodeMeowRecording();
+    this.meowBuffer = c.createBuffer(1, meow.length, XIAOKUI_MEOW.rate);
+    this.meowBuffer.copyToChannel(meow, 0);
   }
 
   currentFrame() {return this.getFrame?.() || this.frame;}
@@ -181,9 +197,9 @@ class DrivingSound {
     // 即使一帧跨过很多事件，也不允许短音效无限叠加。
     if (this.voices.size >= 8) return;
     const c = this.context, source = c.createBufferSource(), gain = c.createGain();
-    source.buffer = this.buffers[Math.abs(Math.round(event.index)) % this.buffers.length];
+    source.buffer = event.type === 'meow' ? this.meowBuffer : this.buffers[Math.abs(Math.round(event.index)) % this.buffers.length];
     source.playbackRate.value = rate;
-    gain.gain.value = DRIVING_AUDIO_LEVELS.release;
+    gain.gain.value = event.type === 'meow' ? DRIVING_AUDIO_LEVELS.meow : DRIVING_AUDIO_LEVELS.release;
     const pan = c.createStereoPanner();pan.pan.value = event.x * .75;
     source.connect(gain);gain.connect(pan);pan.connect(this.master);
     const voice = {source, gain, pan};this.voices.add(voice);
