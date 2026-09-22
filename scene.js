@@ -1,8 +1,8 @@
 'use strict';
 // 时间是唯一运动来源；暂停、跳转和低帧率不会累积运动误差。
-const W=900,H=1200,DURATION=18,BLUE='#0e3cf1',WHITE='#ffffff';
-const BALLOON_COUNT=28;
-const CAR_SCALE=.8;
+const W=900,H=1200,DURATION=14,BLUE='#0e3cf1',WHITE='#ffffff';
+const BALLOON_COUNT=35;
+const CAR_SCALE=.64;
 const COLORS=['#ff6862','#ffad46','#ffe365','#68d694','#67c9ed','#758be9','#ba91df'];
 const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
 const mix=(a,b,t)=>a+(b-a)*t;
@@ -11,11 +11,17 @@ const ease=(t,a,b)=>smooth((t-a)/(b-a));
 const pt=(x,y)=>({x,y});
 const blend=(a,b,t)=>pt(mix(a.x,b.x,t),mix(a.y,b.y,t));
 const ground=x=>1090-6*Math.sin(Math.PI*x/W);
-// 镜头与车保持同速，让整辆车始终留在画面内。
-const DRIVE_SPEED=250,SCREEN_SPEED=0,START_X=470;
+// 先跟车；气球清空后镜头逐渐落后，汽车仍保持同一实际速度。
+const DRIVE_SPEED=360,DEPART_SCREEN_SPEED=210,START_X=470,CAMERA_RELEASE_SECONDS=.7;
 function driveDistance(t){return DRIVE_SPEED*t}
-function carX(t){return START_X+SCREEN_SPEED*t}
-function cameraTravel(t){return (DRIVE_SPEED-SCREEN_SPEED)*t}
+function cameraLag(t){
+  const elapsed=Math.max(0,t-DEPART_AT),u=clamp(elapsed/CAMERA_RELEASE_SECONDS);
+  // 平滑增加车在画面中的速度，积分后使位置与速度都连续。
+  return DEPART_SCREEN_SPEED*(elapsed<CAMERA_RELEASE_SECONDS
+    ?CAMERA_RELEASE_SECONDS*(u*u*u-.5*u*u*u*u):elapsed-CAMERA_RELEASE_SECONDS/2);
+}
+function carX(t){return START_X+cameraLag(t)}
+function cameraTravel(t){return driveDistance(t)-cameraLag(t)}
 let clock=0,paused=false,playbackRate=1,draggingProgress=false;
 let seek,playButton,timeLabel,speedButton,soundButton,sceneSound,lastUI=-1;
 
@@ -80,7 +86,8 @@ function syncSoundButton(error){
   soundButton.title=error?error.message:'开启行驶、风声与气球松绳音效';
 }
 function soundFrame(){
-  return {time:clock,duration:DURATION,rate:playbackRate,running:!paused&&!draggingProgress&&!document.hidden};
+  return {time:clock,duration:DURATION,rate:playbackRate,running:!paused&&!draggingProgress&&!document.hidden,
+    vehicleGain:1-ease(carX(clock),W-120,W+180),vehiclePan:clamp(carX(clock)/W*2-1,-1,1)};
 }
 function updateSound(){sceneSound.update(soundFrame())}
 function setupControlsVisibility(){
@@ -114,7 +121,9 @@ function updateUI(force=false){
   speedButton.textContent=`${playbackRate}×`;
   speedButton.setAttribute('aria-label',`播放速度 ${playbackRate} 倍，点击切换`);
 }
-function vehiclePose(t){const x=carX(t),bob=Math.sin(t*9)*.7+Math.sin(t*3.2)*.45;return {x,y:ground(x)+bob,bob,angle:0}}
+function vehicleBob(t){return Math.sin(t*9)*.7+Math.sin(t*3.2)*.45}
+function vehiclePose(t){const x=carX(t),bob=vehicleBob(t);return {x,y:ground(x)+bob,bob,angle:0}}
+function trackedTether(t){return pt(START_X-152*CAR_SCALE,ground(START_X)+vehicleBob(t)-177*CAR_SCALE)}
 function world(t,p){const car=vehiclePose(t);return pt(car.x+p.x*CAR_SCALE,car.y+p.y*CAR_SCALE)}
 function tether(t){return world(t,pt(-152,-177))}
 function release(i){return 1.1+Math.floor(i/7)*1.5+(i%7)*.105}
@@ -128,7 +137,7 @@ function balloonTilt(i,t){
   return mix(attachedTilt(i,r),free,ease(t,r,r+1.6));
 }
 function attached(i,t){
-  const anchor=tether(t),r=Math.sqrt((i+.6)/BALLOON_COUNT);
+  const anchor=trackedTether(t),r=Math.sqrt((i+.6)/BALLOON_COUNT);
   const a=i*2.39996+(variation(i+7)-.5)*.65;
   // 整簇被迎面风向左带起，绳子斜向后方；每只仍有独立轻摆。
   return pt(anchor.x-116+Math.cos(a)*94*r+(variation(i+51)-.5)*12+Math.sin(t*1.7)*6+Math.sin(t*(1.2+variation(i))+i)*3,
@@ -138,25 +147,47 @@ function attachedVelocity(i,t){
   const dt=.0001,before=attached(i,t-dt),after=attached(i,t+dt);
   return pt((after.x-before.x)/(2*dt),(after.y-before.y)/(2*dt));
 }
-function balloonState(i,t){
+function trackedBalloonState(i,t){
   const r=release(i);
   if(t<=r)return {p:attached(i,t),age:0,flight:0};
   const age=t-r,start=attached(i,r),velocity=attachedVelocity(i,r);
   // 向后漂移的速度换算到跟车镜头中，车与气球的相对运动保持连贯。
-  const wind=SCREEN_SPEED-(108+variation(i+92)*20),rise=-68-variation(i+123)*23;
+  const wind=-(DRIVE_SPEED*.6+variation(i+92)*32),rise=-68-variation(i+123)*23;
   // 松开时保留原速度，再受风与浮力影响向左上飘，位置和速度都不跳变。
   const dragX=.55,dragY=.42;
   const dx=wind*age+(velocity.x-wind)*dragX*(1-Math.exp(-age/dragX));
   const dy=rise*age+(velocity.y-rise)*dragY*(1-Math.exp(-age/dragY));
   return {p:pt(start.x+dx,start.y+dy),age,flight:1-Math.exp(-age/.8)};
 }
-function balloonString(i,t){
-  const s=balloonState(i,t),size=balloonSize(i),tilt=balloonTilt(i,t),r=release(i);
+function trackedBalloonString(i,t){
+  const s=trackedBalloonState(i,t),size=balloonSize(i),tilt=balloonTilt(i,t),r=release(i);
   const tip=pt(s.p.x-Math.sin(tilt)*34*size,s.p.y+Math.cos(tilt)*34*size);
   const freeEnd=pt(s.p.x+22+Math.sin(t*1.4+i)*12,s.p.y+(100+variation(i+67)*28)*size);
   // 绳尾从车尾松开后自然垂落，不再跟着车走，也不随升空凭空消失。
-  const end=t<=r?tether(t):blend(tether(r),freeEnd,ease(t,r,r+.9));
+  const end=t<=r?trackedTether(t):blend(trackedTether(r),freeEnd,ease(t,r,r+.9));
   return {tip,end,opacity:1};
+}
+// 球体用保守外接半径，绳子用曲线控制点边界，连描边也完全离开才放车走。
+function trackedBalloonRightEdge(i,t){
+  const {p}=trackedBalloonState(i,t),string=trackedBalloonString(i,t);
+  return Math.max(p.x+40*balloonSize(i),string.tip.x+10,string.end.x)+2;
+}
+function findDepartureTime(){
+  const lastRelease=release(BALLOON_COUNT-1);
+  for(let frame=0;frame<Math.ceil((DURATION-lastRelease)*120);frame++){
+    const t=lastRelease+frame/120;
+    if(Array.from({length:BALLOON_COUNT},(_,i)=>trackedBalloonRightEdge(i,t)).every(x=>x<-8))return t;
+  }
+  return DURATION;
+}
+const DEPART_AT=findDepartureTime();
+function balloonState(i,t){
+  const state=trackedBalloonState(i,t);
+  return {...state,p:pt(state.p.x+cameraLag(t),state.p.y)};
+}
+function balloonString(i,t){
+  const string=trackedBalloonString(i,t),dx=cameraLag(t);
+  return {...string,tip:pt(string.tip.x+dx,string.tip.y),end:pt(string.end.x+dx,string.end.y)};
 }
 function renderScene(t){
   background(BLUE);
@@ -170,7 +201,7 @@ function renderScene(t){
     const x=k*160-offset;line(x,1132,x+38,1132);
     line(x+92,1176,x+113,1176);
   }
-  drawingContext.save();drawingContext.globalAlpha*=1-ease(t,16.5,18);
+  drawingContext.save();
   for(let i=BALLOON_COUNT-1;i>=0;i--)drawBalloon(i,t,'strings');
   for(let i=BALLOON_COUNT-1;i>=0;i--)drawBalloon(i,t,'body');
   if(t<release(BALLOON_COUNT-1)){

@@ -73,7 +73,7 @@ class DrivingSound {
 
     const carFilter = c.createBiquadFilter();
     carFilter.type = 'lowpass';carFilter.frequency.value = 260;carFilter.Q.value = .5;
-    const carPan = c.createStereoPanner();carPan.pan.value = .08;
+    const carPan = this.carPan = c.createStereoPanner();carPan.pan.value = .08;
     carFilter.connect(carPan);carPan.connect(this.master);
     const tone = (frequency, type) => {
       const source = c.createOscillator(), gain = c.createGain();
@@ -122,7 +122,10 @@ class DrivingSound {
       this.invalidate();
       // 在用户点击中解锁；等待期间可能发生暂停、拖动或关闭声音，所以随后读取最新画面。
       await this.resume();
-      if (revision !== this.revision) return;
+      if (revision !== this.revision) {
+        if (!this.enabled) this.silence();
+        return;
+      }
       this.starting = false;
       const frame = this.currentFrame();
       if (frame) this.update(frame);else this.silence();
@@ -203,7 +206,7 @@ class DrivingSound {
     this.silent = false;
     if (this.context.state !== 'running') {
       if (!this.resumePromise) this.resume().then(() => {
-        if (this.enabled) this.update(this.currentFrame());
+        if (this.enabled) this.update(this.currentFrame());else this.silence();
       }).catch(error => this.fail(error));
       return;
     }
@@ -226,11 +229,15 @@ class DrivingSound {
     if (now - this.lastMix < .045) return;
     this.lastMix = now;
     const pitch = Math.sqrt(Math.max(.25, Math.min(4, rate)));
+    const vehicleGain = Number.isFinite(frame.vehicleGain) ? Math.max(0, Math.min(1, frame.vehicleGain)) : 1;
+    const vehiclePan = Number.isFinite(frame.vehiclePan) ? Math.max(-1, Math.min(1, frame.vehiclePan)) : .08;
     this.set(this.engine.source.frequency, 76 * pitch, .08);
     this.set(this.harmonic.source.frequency, 152 * pitch, .08);
-    this.set(this.engine.gain.gain, DRIVING_AUDIO_LEVELS.engine);
-    this.set(this.harmonic.gain.gain, DRIVING_AUDIO_LEVELS.harmonic);
-    this.set(this.wind.gain, DRIVING_AUDIO_LEVELS.wind * (.93 + .07 * Math.sin(time * .8)), .08);
+    // 汽车驶出右侧时，发动机随位置远去，仍留下少量环境风声。
+    this.set(this.engine.gain.gain, DRIVING_AUDIO_LEVELS.engine * vehicleGain, .07);
+    this.set(this.harmonic.gain.gain, DRIVING_AUDIO_LEVELS.harmonic * vehicleGain, .07);
+    this.set(this.carPan.pan, vehiclePan, .08);
+    this.set(this.wind.gain, DRIVING_AUDIO_LEVELS.wind * (.93 + .07 * Math.sin(time * .8)) * (.3 + .7 * vehicleGain), .08);
     this.set(this.master.gain, DRIVING_AUDIO_LEVELS.master);
   }
 }

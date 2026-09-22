@@ -84,8 +84,8 @@ function harness(options = {}) {
   }};
 }
 
-const events = Array.from({length: 28}, (_, i) => ({time: 1.1 + Math.floor(i / 7) * 1.5 + i % 7 * .105, index: i, x: -.4}));
-const frame = (time, running = true, rate = 1) => ({time, running, rate, duration: 18});
+const events = Array.from({length: 35}, (_, i) => ({time: 1.1 + Math.floor(i / 7) * 1.5 + i % 7 * .105, index: i, x: -.4}));
+const frame = (time, running = true, rate = 1) => ({time, running, rate, duration: 14});
 const tickPromises = async () => {for (let i = 0; i < 8; i++) await Promise.resolve();};
 
 async function main() {
@@ -100,38 +100,39 @@ async function main() {
   assert.equal(c.nodes.filter(node => node.kind === 'oscillator').length, 2);
   const baseNodes = c.nodes.length;
   let maxVoices = 0;
-  for (let i = 1; i <= 18 * 60; i++) {
+  for (let i = 1; i <= 9 * 60; i++) {
     c.advance(1 / 60);sound.update(frame(i / 60));maxVoices = Math.max(maxVoices, sound.voices.size);
   }
-  assert.equal(scheduled.length, 28, '每轮每只气球只响一次');
-  assert.equal(new Set(scheduled.map(item => item.event.index)).size, 28);
+  assert.equal(scheduled.length, events.length, '每轮每只气球只响一次');
+  assert.equal(new Set(scheduled.map(item => item.event.index)).size, events.length);
   for (const item of scheduled) assert.ok(Math.abs(item.when - item.event.time) < .00001, '声音在脱落时响起');
   assert.ok(maxVoices <= 6);assert.equal(sound.voices.size, 0);
   assert.equal(c.nodes.filter(node => !node.disconnected).length, baseNodes, '短音效结束后释放所有临时节点');
   assert.equal(h.timers.size, 0, '播放过程没有后台计时循环');
 
   // 自然循环从头重新排未来事件；不补播上一轮遗漏的声音。
-  sound.update(frame(0));assert.equal(scheduled.length, 28);
-  for (let i = 1; i <= 7 * 60; i++) {c.advance(1 / 60);sound.update(frame(i / 60));}
-  assert.equal(scheduled.length, 56);
+  c.advance(5);sound.update(frame(14));
+  sound.update(frame(0));assert.equal(scheduled.length, events.length);
+  for (let i = 1; i <= 9 * 60; i++) {c.advance(1 / 60);sound.update(frame(i / 60));}
+  assert.equal(scheduled.length, events.length * 2);
 
   // 暂停、切换后台或关闭声音都快速静音并挂起音频处理。
-  sound.update(frame(7, false));
+  sound.update(frame(9, false));
   assert.equal(sound.master.gain.value, 0);assert.equal(sound.enabled, true);
   c.advance(.08);await h.flushTimers();assert.equal(c.state, 'suspended');
   assert.equal(sound.voices.size, 0);
   const beforeResume = scheduled.length;
-  sound.update(frame(7));await tickPromises();
+  sound.update(frame(9));await tickPromises();
   assert.equal(c.state, 'running');assert.equal(scheduled.length, beforeResume, '恢复播放不重放旧事件');
   sound.silence();c.advance(.08);await h.flushTimers();
   assert.equal(c.state, 'suspended');assert.equal(sound.enabled, true);
-  sound.update(frame(8));await tickPromises();assert.equal(c.state, 'running');
+  sound.update(frame(10));await tickPromises();assert.equal(c.state, 'running');
   await sound.setEnabled(false);c.advance(.08);await h.flushTimers();
   assert.equal(c.state, 'suspended');assert.equal(sound.enabled, false);
-  sound.update(frame(9));assert.equal(c.state, 'suspended');
+  sound.update(frame(11));assert.equal(c.state, 'suspended');
 
   // 在后半段开启声音，不补播已经飘走的气球；重新播放才再次进入脱落事件。
-  sound.update(frame(9));await sound.setEnabled(true);assert.equal(scheduled.length, beforeResume);
+  sound.update(frame(11));await sound.setEnabled(true);assert.equal(scheduled.length, beforeResume);
   sound.invalidate();sound.update(frame(0));
   for (let i = 1; i <= 180; i++) {c.advance(1 / 60);sound.update(frame(i / 60 * 2, true, 2));}
   assert.equal(scheduled.slice(beforeResume).every(item => item.rate === 2), true);
@@ -157,6 +158,22 @@ async function main() {
   exactSound.update(frame(events[0].time));await exactSound.setEnabled(true);
   assert.equal(exactSound.voices.size, 0);
 
+  // 汽车远去时，行驶声随距离减弱并移向右侧；车外仍保留三成环境风声。
+  const departing = harness(), departingSound = new departing.DrivingSound(events);
+  departingSound.update({...frame(10), vehicleGain: .5, vehiclePan: .7});await departingSound.setEnabled(true);
+  assert.equal(departingSound.engine.gain.gain.value, departing.DRIVING_AUDIO_LEVELS.engine * .5);
+  assert.equal(departingSound.harmonic.gain.gain.value, departing.DRIVING_AUDIO_LEVELS.harmonic * .5);
+  assert.equal(departingSound.carPan.pan.value, .7);
+  departingSound.context.advance(.1);
+  departingSound.update({...frame(10.1), vehicleGain: 0, vehiclePan: 1});
+  assert.equal(departingSound.engine.gain.gain.value, 0);assert.equal(departingSound.harmonic.gain.gain.value, 0);
+  assert.equal(departingSound.carPan.pan.value, 1);
+  assert.equal(departingSound.wind.gain.value, departing.DRIVING_AUDIO_LEVELS.wind * (.93 + .07 * Math.sin(10.1 * .8)) * .3);
+  assert.ok(departingSound.wind.gain.targets.at(-1).smoothing > 0, '风声平滑减弱，不瞬间切断');
+  departingSound.context.advance(.1);departingSound.update(frame(10.2));
+  assert.equal(departingSound.engine.gain.gain.value, departing.DRIVING_AUDIO_LEVELS.engine);
+  assert.equal(departingSound.carPan.pan.value, .08, '缺省参数保留原声音位置与音量');
+
   // 用户解锁设备期间切换暂停，须读取最新画面，而不是启动旧状态。
   let resolveGate;
   const gate = new Promise(resolve => {resolveGate = resolve;});
@@ -170,7 +187,9 @@ async function main() {
   let unlock;
   const raceHarness = harness({resumeGate: new Promise(resolve => {unlock = resolve;})});
   const raceSound = new raceHarness.DrivingSound(events);raceSound.update(frame(0));
-  const firstEnable = raceSound.setEnabled(true);await raceSound.setEnabled(false);unlock();await firstEnable;
+  const firstEnable = raceSound.setEnabled(true);await raceSound.setEnabled(false);
+  await raceHarness.flushTimers(); // 设备解锁慢于静音挂起，也不能在迟到后持续空转。
+  unlock();await firstEnable;
   assert.equal(raceSound.enabled, false);assert.equal(raceSound.master.gain.value, 0);
   await raceHarness.flushTimers();assert.equal(raceSound.context.state, 'suspended');
 
@@ -208,6 +227,6 @@ async function main() {
     const worstPeak = levels.master * (levels.engine + levels.harmonic + levels.wind * peak + 8 * levels.release * .72);
     assert.ok(worstPeak < .3, `音量保留余量：${worstPeak}`);
   }
-  console.log(`声音检查通过：28 次脱落逐一对齐、循环/暂停/后台/拖动/倍速、异步开关、节点回收；最多同时 ${maxVoices} 个短声，保守总峰值低于 0.3。`);
+  console.log(`声音检查通过：${events.length} 次脱落逐一对齐、循环/暂停/后台/拖动/倍速、汽车远去与声像、异步开关、节点回收；最多同时 ${maxVoices} 个短声，保守总峰值低于 0.3。`);
 }
 main().catch(error => {console.error(error);process.exitCode = 1;});

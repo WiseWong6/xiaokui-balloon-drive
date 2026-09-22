@@ -1,7 +1,7 @@
 /* 小葵与敞篷车：按 xiaokui-car-arm-trimmed.png 的批准造型转绘。
  * 只用 p5.js 曲线，轮胎底为本地 y=0；整车位移由 scene.js 控制。
  */
-function drawXiaokuiCar(t, travel = t * 250) {
+function drawXiaokuiCar(t, travel = t * 360) {
   const WHITE = '#FFFFFF';
   const FUR = '#958878';
   const INNER_EAR = '#78634E';
