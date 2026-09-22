@@ -289,9 +289,9 @@ async function main() {
     const meow = h.decodeMeowRecording();
     assert.equal(Math.abs(meow[0]),0);assert.ok(Math.abs(meow.at(-1))<.001);
     assert.ok([...meow].every(value=>Number.isFinite(value)&&Math.abs(value)<=.651));
-    assert.ok(levels.master*(levels.engine+levels.harmonic+levels.wind*peak+levels.meow*.65)<.3,'猫叫叠加行驶声仍保留音量余量');
+    assert.ok(levels.master*(levels.engine+levels.harmonic+levels.wind*peak+6*levels.release*.72+levels.meow*.65)<.4,'猫叫与松绳声同时响起时仍保留音量余量');
   }
   console.log(`声音检查通过：${events.length} 次脱落逐一对齐、循环/暂停/后台/拖动/倍速、汽车远去与声像、异步开关、节点回收；最多同时 ${maxVoices} 个短声，保守总峰值低于 0.3。`);
-  console.log('猫叫检查通过：与真实录音逐采样一致，气球清空后每轮一声，五档倍速和三种设备采样率同步，跳过不补播、暂停可取消，采样首尾平滑。');
+  console.log('猫叫检查通过：与真实录音逐采样一致，最后一个气球脱落时每轮一声，五档倍速和三种设备采样率同步，跳过不补播、暂停可取消，采样首尾平滑。');
 }
 main().catch(error => {console.error(error);process.exitCode = 1;});

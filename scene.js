@@ -184,7 +184,7 @@ function findDepartureTime(){
   return DURATION;
 }
 const DEPART_AT=findDepartureTime();
-const MEOW_AT=DEPART_AT+.12,MEOW_DURATION=XIAOKUI_MEOW.frames/XIAOKUI_MEOW.rate;
+const MEOW_AT=release(BALLOON_COUNT-1),MEOW_DURATION=XIAOKUI_MEOW.frames/XIAOKUI_MEOW.rate;
 function meowMouth(t){
   return ease(t,MEOW_AT,MEOW_AT+.07)*(1-ease(t,MEOW_AT+MEOW_DURATION-.18,MEOW_AT+MEOW_DURATION));
 }

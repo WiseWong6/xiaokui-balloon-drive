@@ -310,7 +310,8 @@ async function verifyControls(){
   assert.equal(meows.length,1,'one meow per loop');
   assert.equal(meows[0].time,api.MEOW_AT);
   assert.equal(meows[0].duration,api.MEOW_DURATION);
-  assert.ok(api.MEOW_AT>allBalloonsOutAt&&api.MEOW_AT+api.MEOW_DURATION<wholeCarOutAt,'meow follows balloon clearance while Xiaokui is still visible');
+  assert.equal(api.MEOW_AT,api.release(api.BALLOON_COUNT-1),'meow starts exactly when the last balloon releases');
+  assert.ok(api.MEOW_AT<allBalloonsOutAt&&api.MEOW_AT+api.MEOW_DURATION<wholeCarOutAt,'meow happens while balloons and Xiaokui are still visible');
   assert.equal(api.meowMouth(api.MEOW_AT-.01),0);
   assert.equal(api.meowMouth(api.MEOW_AT+api.MEOW_DURATION+.01),0);
   assert.ok(api.meowMouth(api.MEOW_AT+.2)>.9,'mouth opens during the meow');
