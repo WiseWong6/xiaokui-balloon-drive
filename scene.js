@@ -16,34 +16,103 @@ const DRIVE_SPEED=250,SCREEN_SPEED=0,START_X=470;
 function driveDistance(t){return DRIVE_SPEED*t}
 function carX(t){return START_X+SCREEN_SPEED*t}
 function cameraTravel(t){return (DRIVE_SPEED-SCREEN_SPEED)*t}
-let clock=0,paused=false,seek,playButton,phaseLabel,timeLabel,lastUI=-1;
+let clock=0,paused=false,playbackRate=1,draggingProgress=false;
+let seek,playButton,timeLabel,speedButton,soundButton,sceneSound,lastUI=-1;
 
 function setup(){
   const canvas=createCanvas(W,H);canvas.parent('stage');
   pixelDensity(Math.min(window.devicePixelRatio||1,2));
   frameRate(60);strokeCap(ROUND);strokeJoin(ROUND);
-  seek=document.getElementById('seek');playButton=document.getElementById('play');
-  phaseLabel=document.getElementById('phase');timeLabel=document.getElementById('time');
+  seek=document.getElementById('play-progress');playButton=document.getElementById('play-toggle');
+  timeLabel=document.getElementById('play-time');speedButton=document.getElementById('play-speed');
+  soundButton=document.getElementById('play-sound');
+  const restart=document.getElementById('play-restart');
+  for(const control of [seek,playButton,speedButton,soundButton,restart])control.disabled=false;
   paused=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  playButton.onclick=()=>{paused=!paused;syncPlay()};
-  document.getElementById('restart').onclick=()=>{clock=0;paused=false;syncPlay();updateUI(true)};
-  seek.addEventListener('input',()=>{clock=clamp(Number(seek.value),0,DURATION);updateUI(true)});
+  sceneSound=new DrivingSound(Array.from({length:BALLOON_COUNT},(_,index)=>({
+    time:release(index),index,x:tether(release(index)).x/W*2-1
+  })));
+  sceneSound.getFrame=soundFrame;
+  sceneSound.onError=error=>syncSoundButton(error);
+  playButton.onclick=()=>{paused=!paused;syncPlay();updateSound()};
+  restart.onclick=()=>{
+    clock=0;paused=false;sceneSound.invalidate();syncPlay();updateUI(true);updateSound();
+  };
+  speedButton.onclick=()=>{
+    const rates=[.5,1,1.5,2,3];
+    playbackRate=rates[(rates.indexOf(playbackRate)+1)%rates.length];
+    sceneSound.invalidate();updateUI(true);updateSound();
+  };
+  soundButton.onclick=async()=>{
+    soundButton.disabled=true;
+    try{await sceneSound.setEnabled(!sceneSound.enabled);syncSoundButton();updateSound()}
+    catch(error){syncSoundButton(error)}
+    finally{soundButton.disabled=false}
+  };
+  seek.addEventListener('pointerdown',()=>{draggingProgress=true;updateSound()});
+  seek.addEventListener('input',()=>{
+    const value=Number(seek.value);
+    if(!Number.isFinite(value))return;
+    clock=clamp(value,0,DURATION);sceneSound.invalidate();updateUI(true);updateSound();
+  });
+  const finishDrag=()=>{if(draggingProgress){draggingProgress=false;updateSound()}};
+  for(const event of ['pointerup','pointercancel','blur'])window.addEventListener(event,finishDrag);
   document.addEventListener('keydown',e=>{
-    if(e.code==='Space'&&!['INPUT','BUTTON','A'].includes(document.activeElement.tagName)){
-      e.preventDefault();paused=!paused;syncPlay();
+    if(e.code==='Space'&&!e.repeat&&!['INPUT','BUTTON','A'].includes(document.activeElement.tagName)){
+      e.preventDefault();paused=!paused;syncPlay();updateSound();
     }
   });
-  syncPlay();updateUI(true);
+  document.addEventListener('visibilitychange',()=>{
+    sceneSound.invalidate();updateSound();
+  });
+  window.addEventListener('pagehide',()=>sceneSound.silence());
+  window.addEventListener('pageshow',()=>{sceneSound.invalidate();updateSound()});
+  setupControlsVisibility();syncPlay();syncSoundButton();updateUI(true);updateSound();
 }
-function syncPlay(){playButton.textContent=paused?'播放':'暂停';playButton.setAttribute('aria-label',paused?'播放动画':'暂停动画')}
+function syncPlay(){
+  playButton.textContent=paused?'播放':'暂停';
+  playButton.setAttribute('aria-label',paused?'播放动画':'暂停动画');
+}
+function syncSoundButton(error){
+  soundButton.textContent=error?'音效重试':sceneSound.enabled?'声音开':'声音关';
+  soundButton.setAttribute('aria-pressed',String(sceneSound.enabled));
+  soundButton.setAttribute('aria-label',error?'重试开启音效':sceneSound.enabled?'关闭音效':'开启音效');
+  soundButton.title=error?error.message:'开启行驶、风声与气球松绳音效';
+}
+function soundFrame(){
+  return {time:clock,duration:DURATION,rate:playbackRate,running:!paused&&!draggingProgress&&!document.hidden};
+}
+function updateSound(){sceneSound.update(soundFrame())}
+function setupControlsVisibility(){
+  const controls=document.getElementById('play-controls');
+  const reveal=()=>controls.classList.remove('is-hidden');
+  controls.addEventListener('focusin',reveal);
+  window.addEventListener('pointerdown',reveal,{passive:true});
+  window.addEventListener('pointermove',event=>{
+    if(event.pointerType!=='mouse')return;
+    const bounds=controls.getBoundingClientRect();
+    const near=event.clientX>=bounds.left-16&&event.clientX<=bounds.right+16&&event.clientY>=bounds.top-16;
+    if(near||draggingProgress||controls.contains(document.activeElement))reveal();
+    else controls.classList.add('is-hidden');
+  },{passive:true});
+}
 function draw(){
-  if(!paused&&!document.hidden)clock=(clock+Math.min(deltaTime,80)/1000)%DURATION;
-  renderScene(clock);updateUI();
+  if(!paused&&!draggingProgress&&!document.hidden){
+    const next=clock+Math.min(deltaTime,80)/1000*playbackRate;
+    if(next>=DURATION)sceneSound.invalidate();
+    clock=next%DURATION;
+  }
+  renderScene(clock);updateUI();updateSound();
 }
+function clockText(value){return `${String(Math.floor(value/60)).padStart(2,'0')}:${String(Math.floor(value%60)).padStart(2,'0')}`}
 function updateUI(force=false){
   if(!force&&Math.floor(clock*10)===lastUI)return;lastUI=Math.floor(clock*10);
-  seek.value=clock;timeLabel.textContent=`00:${String(Math.floor(clock)).padStart(2,'0')} / 00:18`;
-  phaseLabel.textContent=clock<1.1?'带着气球兜风':clock<6.3?'让气球慢慢随风离开':clock<16.5?'小葵向前，气球随风':'下一次出发';
+  if(!draggingProgress||force)seek.value=clock;
+  seek.style.setProperty('--progress',`${clock/DURATION*100}%`);
+  seek.setAttribute('aria-valuetext',`${clockText(clock)}，共 ${clockText(DURATION)}`);
+  timeLabel.textContent=`${clockText(clock/playbackRate)} / ${clockText(DURATION/playbackRate)}`;
+  speedButton.textContent=`${playbackRate}×`;
+  speedButton.setAttribute('aria-label',`播放速度 ${playbackRate} 倍，点击切换`);
 }
 function vehiclePose(t){const x=carX(t),bob=Math.sin(t*9)*.7+Math.sin(t*3.2)*.45;return {x,y:ground(x)+bob,bob,angle:0}}
 function world(t,p){const car=vehiclePose(t);return pt(car.x+p.x*CAR_SCALE,car.y+p.y*CAR_SCALE)}

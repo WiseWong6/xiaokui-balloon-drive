@@ -6,17 +6,21 @@
 <link rel="stylesheet" href="style.css">
 <script defer src="vendor/p5.min.js"></script>
 <script defer src="xiaokui-car.js"></script>
+<script defer src="sound.js"></script>
 <script defer src="scene.js"></script>
 </head>
 <body>
 <main>
-  <header><span>小葵 · 把气球交给风</span><a href="xiaokui-car-arm-trimmed.png" target="_blank" rel="noopener">造型稿 ↗</a></header>
   <div id="stage" role="img" aria-label="纯蓝空间里，灰白小猫小葵驾驶白色敞篷车匀速向右行驶，镜头持续跟随，整车始终在画面内；车尾的二十八只彩色气球向后倾斜，逐个松开，随风向左上方飘走。"></div>
-  <footer>
-    <div class="buttons"><button id="play" aria-label="暂停动画">暂停</button><button id="restart">重播</button><span id="phase" aria-live="off">带着气球兜风</span></div>
-    <div class="timeline"><input id="seek" type="range" min="0" max="18" step="0.01" value="0" aria-label="动画进度"><output id="time">00:00 / 00:18</output></div>
-  </footer>
 </main>
+<div id="play-controls" class="playback" role="group" aria-label="动画播放控制">
+  <button id="play-toggle" type="button" aria-label="暂停动画" disabled>暂停</button>
+  <input id="play-progress" type="range" min="0" max="18" step="0.01" value="0" aria-label="动画进度" disabled>
+  <button id="play-restart" type="button" aria-label="从头播放动画" disabled>重播</button>
+  <button id="play-speed" type="button" aria-label="播放速度 1 倍，点击切换" title="切换倍速：0.5 / 1 / 1.5 / 2 / 3" disabled>1×</button>
+  <button id="play-sound" type="button" aria-label="开启音效" aria-pressed="false" title="开启行驶、风声与气球松绳音效" disabled>声音关</button>
+  <output id="play-time" for="play-progress">00:00 / 00:18</output>
+</div>
 <noscript>请启用 JavaScript 以播放动画。</noscript>
 </body>
 </html>

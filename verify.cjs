@@ -11,6 +11,8 @@ const scripts=[...html.matchAll(/<script\b[^>]*src="([^"]+)"/g)].map(m=>m[1]);
 assert.ok(scripts.indexOf('vendor/p5.min.js')>=0,'local p5 is present');
 assert.ok(scripts.indexOf('vendor/p5.min.js')<scripts.indexOf('xiaokui-car.js'),'p5 loads before cat drawing');
 assert.ok(scripts.indexOf('xiaokui-car.js')<scripts.indexOf('scene.js'),'cat drawing loads before animation');
+assert.ok(scripts.indexOf('sound.js')>=0&&scripts.indexOf('sound.js')<scripts.indexOf('scene.js'),'sound support loads before animation');
+assert.ok(!/<header\b|id="phase"|造型稿/.test(html),'corner labels are removed');
 for(const [,resource] of html.matchAll(/(?:src|href)="([^"]+)"/g)){
   if(/^(?:[a-z]+:|#|\/\/)/i.test(resource))continue;
   assert.ok(fs.existsSync(path.join(__dirname,resource.split(/[?#]/)[0])),`missing resource: ${resource}`);
@@ -57,10 +59,36 @@ function harness(reducedMotion=false){
   };
   ctx.createRadialGradient=(...args)=>gradient('createRadialGradient',args);
   ctx.createLinearGradient=(...args)=>gradient('createLinearGradient',args);
+  const eventTarget=()=>({listeners:{},addEventListener(k,v){
+    const previous=this.listeners[k];this.listeners[k]=previous?event=>{previous(event);v(event)}:v;
+  }});
   const elements={};
-  for(const [,id] of html.matchAll(/\bid="([^"]+)"/g))elements[id]={id,value:'0',textContent:'',attributes:{},listeners:{},setAttribute(k,v){this.attributes[k]=v},addEventListener(k,v){this.listeners[k]=v}};
-  const document={hidden:false,activeElement:{tagName:'BODY'},listeners:{},getElementById(id){assert.ok(elements[id],`unknown element ${id}`);return elements[id]},addEventListener(k,v){this.listeners[k]=v}};
-  const env={Math,console,drawingContext:ctx,CLOSE:'close',ROUND:'round',PI:Math.PI,TWO_PI:Math.PI*2,HALF_PI:Math.PI/2,CENTER:'center',CORNER:'corner',document,window:{devicePixelRatio:2,matchMedia:()=>({matches:reducedMotion})},deltaTime:1000/60};
+  for(const [,tagName,attributes,id] of html.matchAll(/<([a-z]+)\b([^>]*\bid="([^"]+)"[^>]*)>/g)){
+    const classes=new Set((attributes.match(/\bclass="([^"]*)"/)?.[1]||'').split(/\s+/).filter(Boolean));
+    const properties={};
+    elements[id]={...eventTarget(),id,tagName:tagName.toUpperCase(),value:'0',textContent:'',attributes:{},disabled:/\bdisabled\b/.test(attributes),
+      setAttribute(k,v){this.attributes[k]=String(v)},getAttribute(k){return this.attributes[k]??null},
+      style:{setProperty(k,v){properties[k]=String(v)},getPropertyValue(k){return properties[k]||''}},
+      classList:{add(...values){values.forEach(v=>classes.add(v))},remove(...values){values.forEach(v=>classes.delete(v))},contains(v){return classes.has(v)},toggle(v,force){const add=force===undefined?!classes.has(v):force;add?classes.add(v):classes.delete(v);return add}},
+      contains(element){return element===this||(this.id==='play-controls'&&/^play-/.test(element?.id||''))},
+      getBoundingClientRect(){return {top:1100,bottom:1184,left:70,right:830,width:760,height:84}}
+    };
+  }
+  const document={...eventTarget(),hidden:false,activeElement:{tagName:'BODY'},getElementById(id){assert.ok(elements[id],`unknown element ${id}`);return elements[id]}};
+  let timerNow=0,timerSerial=0;const timers=new Map();
+  const setTimeout=(callback,delay=0)=>{const id=++timerSerial;timers.set(id,{callback,at:timerNow+delay});return id};
+  const clearTimeout=id=>timers.delete(id);
+  const advanceTimers=ms=>{timerNow+=ms;for(const [id,timer] of timers)if(timer.at<=timerNow){timers.delete(id);timer.callback()}};
+  const soundCalls=[],sounds=[];
+  class DrivingSound{
+    constructor(events=[]){this.events=events;this.enabled=false;this.failNextEnable=false;sounds.push(this)}
+    async setEnabled(enabled){soundCalls.push({method:'setEnabled',enabled});if(this.failNextEnable){this.failNextEnable=false;throw Error('模拟音频设备不可用')}this.enabled=enabled;return enabled}
+    update(...args){soundCalls.push({method:'update',args})}
+    invalidate(...args){soundCalls.push({method:'invalidate',args})}
+    silence(...args){soundCalls.push({method:'silence',args})}
+  }
+  const window={...eventTarget(),devicePixelRatio:2,innerHeight:1200,innerWidth:900,matchMedia:()=>({matches:reducedMotion}),setTimeout,clearTimeout,DrivingSound};
+  const env={Math,console,drawingContext:ctx,CLOSE:'close',ROUND:'round',PI:Math.PI,TWO_PI:Math.PI*2,HALF_PI:Math.PI/2,CENTER:'center',CORNER:'corner',document,window,DrivingSound,setTimeout,clearTimeout,performance:{now:()=>timerNow},deltaTime:1000/60};
   const transforms={
     translate:(x,y)=>multiply([1,0,0,1,x,y]),
     rotate:a=>multiply([Math.cos(a),Math.sin(a),-Math.sin(a),Math.cos(a),0,0]),
@@ -102,7 +130,7 @@ function harness(reducedMotion=false){
     assert.equal(p5Stack.length,0,'unbalanced p5 push/pop');assert.equal(contextStack.length,0,'unbalanced canvas save/restore');
     assert.deepEqual(matrix,[1,0,0,1,0,0],'transform leaked outside draw');assert.equal(ctx.globalAlpha,1,'opacity leaked outside draw');
   };
-  return {api,env,elements,document,evaluate,balanced,get calls(){return calls},
+  return {api,env,elements,document,evaluate,balanced,advanceTimers,sounds,soundCalls,get calls(){return calls},
     bounds(fn){capture={minX:Infinity,minY:Infinity,maxX:-Infinity,maxY:-Infinity,shapes:[]};fn();const result=capture;capture=null;balanced();return result},
     signature(fn){hash=createHash('sha256');fn();const result=hash.digest('hex');hash=null;balanced();return result},
     rotations(fn){rotations=[];fn();const result=rotations;rotations=null;balanced();return result},
@@ -205,21 +233,125 @@ for(const t of [0,1.1,3,5.5,7,10,12,15,17.9]){
   assert.equal(test.signature(()=>api.renderScene(t)),before,`draw output independent of seek order at ${t}s`);
 }
 
-// 最小 DOM 模拟：确认控件真正改变时钟，减少动态效果偏好受到尊重。
-api.setup();assert.equal(test.evaluate('paused'),false,'normal playback starts active');
-test.elements.play.onclick();assert.equal(test.evaluate('paused'),true,'pause button');
-const pausedAt=test.evaluate('clock');api.draw();assert.equal(test.evaluate('clock'),pausedAt,'paused clock stays still');
-test.elements.seek.value='13.23';test.elements.seek.listeners.input();assert.equal(test.evaluate('clock'),13.23,'seek input updates clock');
-assert.ok(test.elements.time.textContent.includes('00:13'),'seek updates time label');
-test.elements.restart.onclick();assert.equal(test.evaluate('clock'),0,'replay resets clock');assert.equal(test.evaluate('paused'),false,'replay resumes');
-api.draw();assert.ok(test.evaluate('clock')>0,'playing advances clock');
-test.document.hidden=true;const hiddenAt=test.evaluate('clock');api.draw();assert.equal(test.evaluate('clock'),hiddenAt,'hidden page does not advance');test.document.hidden=false;
-test.evaluate('clock=17.99');test.env.deltaTime=1000;api.draw();assert.ok(Math.abs(test.evaluate('clock')-.07)<1e-9,'loop wraps and frame delta is capped');
-let prevented=0;const space={code:'Space',preventDefault(){prevented++}};
-test.document.listeners.keydown(space);assert.equal(test.evaluate('paused'),true,'space pauses');assert.equal(prevented,1,'space stops page scroll');
-for(const tagName of ['INPUT','BUTTON','A']){test.document.activeElement={tagName};test.document.listeners.keydown(space);assert.equal(test.evaluate('paused'),true,'focused controls retain keyboard behavior')}
-test.balanced();
-const reduced=harness(true);reduced.api.setup();assert.equal(reduced.evaluate('paused'),true,'reduced motion starts paused');
-reduced.api.draw();assert.equal(reduced.evaluate('clock'),0,'reduced motion has no automatic advance');reduced.balanced();
-console.log(`通过：完整 18 秒共 1081 个采样帧，${test.calls+reduced.calls} 次绘图调用参数均有限；镜头持续跟车，小葵和汽车始终完整留在画面内，结尾也不淡出；实际车速恒定为每秒 250 像素，两轮按实际路程转动；28 只气球先向车后倾斜，再逐只松开，位置和速度连续，向左上飘离并保留完整球形；已移除彩虹；绘图状态与跳转一致；播放、暂停、重播、进度与减少动态效果逻辑通过；静态资源完整。`);
-console.log('本检查不替代浏览器中的画面与实际操作验收。');
+// 最小 DOM 模拟：检查播放条的状态切换、进度拖动与音效同步，不代替实际浏览器验收。
+async function verifyControls(){
+  const controls=test.elements['play-controls'],play=test.elements['play-toggle'];
+  const progress=test.elements['play-progress'],time=test.elements['play-time'];
+  const restart=test.elements['play-restart'],speed=test.elements['play-speed'],sound=test.elements['play-sound'];
+  const invalidations=()=>test.soundCalls.filter(call=>call.method==='invalidate').length;
+  const audioFrame=()=>test.soundCalls.filter(call=>call.method==='update').at(-1)?.args[0];
+  api.setup();
+  assert.equal(test.evaluate('paused'),false,'normal playback starts active');
+  assert.equal(test.evaluate('playbackRate'),1,'default playback speed');
+  assert.equal(play.textContent,'暂停','initial button matches active playback');
+  assert.equal(play.disabled,false,'playback becomes available after setup');
+  assert.equal(progress.disabled,false,'progress becomes available after setup');
+  assert.equal(test.sounds.length,1,'one audio controller is shared by playback controls');
+  assert.equal(test.sounds[0].enabled,false,'sound needs deliberate opt-in');
+  assert.equal(test.sounds[0].events.length,28,'each departing balloon has one sound event');
+  for(const [i,event] of test.sounds[0].events.entries()){
+    assert.equal(event.time,api.release(i),'sound release time comes from the visible balloon motion');
+    assert.equal(event.index,i,'balloon sound retains its event index');
+    assert.ok(event.x>=-1&&event.x<=1,'balloon sound stereo position is valid');
+  }
+  assert.equal(audioFrame().running,true,'sound receives initial playback intent');
+  assert.equal(audioFrame().duration,18,'sound shares the animation duration');
+
+  play.onclick();assert.equal(test.evaluate('paused'),true,'pause button');
+  assert.equal(audioFrame().running,false,'pause stops sound as well as the scene');
+  const pausedAt=test.evaluate('clock');api.draw();assert.equal(test.evaluate('clock'),pausedAt,'paused clock stays still');
+  let invalidated=invalidations();
+  progress.value='13.23';progress.listeners.input();assert.equal(test.evaluate('clock'),13.23,'seek input updates clock');
+  assert.ok(time.textContent.includes('00:13'),'seek updates elapsed time');
+  assert.ok(Math.abs(parseFloat(progress.style.getPropertyValue('--progress'))-13.23/18*100)<.01,'seek updates progress fill');
+  assert.ok(progress.attributes['aria-valuetext'],'progress exposes spoken time');
+  assert.ok(invalidations()>invalidated,'seek invalidates previously scheduled sound events');
+  progress.value='99';progress.listeners.input();assert.equal(test.evaluate('clock'),18,'seek clamps at end');
+  progress.value='-1';progress.listeners.input();assert.equal(test.evaluate('clock'),0,'seek clamps at beginning');
+
+  restart.onclick();assert.equal(test.evaluate('clock'),0,'replay resets clock');assert.equal(test.evaluate('paused'),false,'replay resumes');
+  api.draw();assert.ok(test.evaluate('clock')>0,'playing advances clock');
+  progress.listeners.pointerdown({pointerId:1});
+  assert.equal(test.evaluate('draggingProgress'),true,'pointer drag is tracked');
+  assert.equal(test.evaluate('paused'),false,'drag preserves user playback intent');
+  assert.equal(audioFrame().running,false,'drag silences sound');
+  const draggingAt=test.evaluate('clock');api.draw();assert.equal(test.evaluate('clock'),draggingAt,'clock rests during dragging');
+  progress.value='6';progress.listeners.input();test.env.window.listeners.pointerup({pointerId:1});
+  assert.equal(test.evaluate('draggingProgress'),false,'release finishes drag outside progress bar');
+  assert.equal(audioFrame().running,true,'release resumes sound with user playback intent');
+  api.draw();assert.ok(test.evaluate('clock')>6,'playing resumes after drag');
+  play.onclick();
+  for(const event of ['pointercancel','blur']){
+    progress.listeners.pointerdown({pointerId:2});progress.value='7';progress.listeners.input();
+    test.env.window.listeners[event]({pointerId:2});
+    assert.equal(test.evaluate('draggingProgress'),false,`${event} releases drag state`);
+    api.draw();assert.equal(test.evaluate('clock'),7,`${event} preserves a user pause`);
+  }
+
+  invalidated=invalidations();
+  speed.onclick();assert.equal(test.evaluate('playbackRate'),1.5,'speed advances to 1.5×');
+  assert.equal(audioFrame().rate,1.5,'sound uses the new scene rate');
+  assert.equal(speed.textContent,'1.5×','speed button displays active rate');
+  assert.ok(time.textContent.includes('00:12'),'displayed duration accounts for 1.5× speed');
+  assert.ok(invalidations()>invalidated,'speed change invalidates scheduled sounds');
+  for(const rate of [2,3,.5,1]){speed.onclick();assert.equal(test.evaluate('playbackRate'),rate,'speed cycles through standard rates')}
+  speed.onclick();restart.onclick();test.env.deltaTime=1000/60;api.draw();
+  assert.ok(Math.abs(test.evaluate('clock')-.025)<1e-9,'playback rate controls scene time');
+  for(let i=0;i<4;i++)speed.onclick();assert.equal(test.evaluate('playbackRate'),1,'restore normal playback rate');
+
+  test.document.hidden=true;test.document.listeners.visibilitychange();
+  assert.equal(audioFrame().running,false,'background tab silences sound');
+  const hiddenAt=test.evaluate('clock');api.draw();assert.equal(test.evaluate('clock'),hiddenAt,'hidden page does not advance');
+  test.document.hidden=false;test.document.listeners.visibilitychange();
+  assert.equal(audioFrame().running,true,'foreground tab restores intended sound playback');
+  api.draw();assert.ok(test.evaluate('clock')>hiddenAt,'visible page resumes intended playback');
+  test.evaluate('clock=17.99');test.env.deltaTime=1000;api.draw();assert.ok(Math.abs(test.evaluate('clock')-.07)<1e-9,'loop wraps and frame delta is capped');
+
+  let prevented=0;const space={code:'Space',preventDefault(){prevented++}};
+  test.document.listeners.keydown(space);assert.equal(test.evaluate('paused'),true,'space pauses');assert.equal(prevented,1,'space stops page scroll');
+  for(const tagName of ['INPUT','BUTTON','A']){
+    test.document.activeElement={tagName};test.document.listeners.keydown(space);assert.equal(test.evaluate('paused'),true,'focused controls retain keyboard behavior');
+  }
+  test.document.activeElement={tagName:'BODY'};
+
+  await sound.onclick();assert.equal(test.sounds[0].enabled,true,'sound button enables sound');
+  assert.equal(sound.attributes['aria-pressed'],'true','sound opt-in is exposed to assistive technology');
+  assert.equal(sound.textContent,'声音开','sound button reports enabled state');
+  assert.equal(sound.disabled,false,'sound button recovers after async enabling');
+  await sound.onclick();assert.equal(test.sounds[0].enabled,false,'sound button mutes sound');
+  test.sounds[0].failNextEnable=true;await sound.onclick();
+  assert.equal(sound.disabled,false,'audio failure leaves retry available');
+  assert.equal(sound.attributes['aria-pressed'],'false','audio failure never claims sound is enabled');
+  await sound.onclick();assert.equal(test.sounds[0].enabled,true,'retry can enable sound');
+  const silenceCount=test.soundCalls.filter(call=>call.method==='silence').length;
+  test.env.window.listeners.pagehide();
+  assert.ok(test.soundCalls.filter(call=>call.method==='silence').length>silenceCount,'leaving the page silences audio');
+  test.env.window.listeners.pageshow();
+  assert.ok(test.soundCalls.some(call=>call.method==='update'),'scene synchronizes sound with playback');
+
+  // 播放条沿用海边夕阳的靠近底部显示、离开隐藏行为，键盘聚焦和拖动时保留。
+  play.onclick();
+  test.env.window.listeners.pointermove({pointerType:'mouse',clientX:450,clientY:1190});
+  assert.equal(controls.classList.contains('is-hidden'),false,'pointer near controls reveals playback');
+  test.document.activeElement=play;controls.listeners.focusin({target:play});
+  test.env.window.listeners.pointermove({pointerType:'mouse',clientX:450,clientY:50});
+  test.advanceTimers(10000);assert.equal(controls.classList.contains('is-hidden'),false,'keyboard focus keeps controls visible');
+  test.document.activeElement={tagName:'BODY'};
+  test.env.window.listeners.pointermove({pointerType:'mouse',clientX:450,clientY:50});test.advanceTimers(10000);
+  assert.equal(controls.classList.contains('is-hidden'),true,'playback hides outside control area after idle delay');
+  test.env.window.listeners.pointermove({pointerType:'mouse',clientX:450,clientY:1190});
+  assert.equal(controls.classList.contains('is-hidden'),false,'bottom pointer restores hidden controls');
+  test.env.window.listeners.pointermove({pointerType:'touch',clientX:450,clientY:50});
+  assert.equal(controls.classList.contains('is-hidden'),false,'touch interaction never hides playback');
+  progress.listeners.pointerdown({pointerId:3});
+  test.env.window.listeners.pointermove({pointerType:'mouse',clientX:450,clientY:50});
+  assert.equal(controls.classList.contains('is-hidden'),false,'progress remains visible while dragging away');
+  test.env.window.listeners.pointerup({pointerId:3});
+  test.balanced();
+
+  const reduced=harness(true);reduced.api.setup();assert.equal(reduced.evaluate('paused'),true,'reduced motion starts paused');
+  reduced.api.draw();assert.equal(reduced.evaluate('clock'),0,'reduced motion has no automatic advance');reduced.balanced();
+  console.log(`通过：完整 18 秒共 1081 个采样帧，${test.calls+reduced.calls} 次绘图调用参数均有限；镜头持续跟车，小葵和汽车始终完整留在画面内，结尾也不淡出；实际车速恒定为每秒 250 像素，两轮按实际路程转动；28 只气球先向车后倾斜，再逐只松开，位置和速度连续，向左上飘离并保留完整球形；已移除彩虹和角落文案；绘图状态与跳转一致；标准播放条的播放、暂停、重播、拖动、倍速、隐现与音效开关通过；减少动态效果受到尊重；静态资源完整。`);
+  console.log('本检查不替代浏览器中的画面、听感与实际操作验收。');
+}
+verifyControls().catch(error=>{console.error(error);process.exitCode=1});
